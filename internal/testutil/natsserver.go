@@ -19,6 +19,9 @@ func StartServer(t *testing.T) (*natssrv.Server, string) {
 		NoLog:          true,
 		NoSigs:         true,
 		MaxControlLine: 4096,
+
+		JetStream: true,
+		StoreDir:  t.TempDir(),
 	}
 
 	s, err := natssrv.NewServer(opts)
