@@ -104,14 +104,36 @@ func (c *Client) Close() {
 	c.mu.Lock()
 	subs := c.subs
 	c.subs = nil
+	conn := c.conn
+	c.conn = nil
 	c.mu.Unlock()
 
-	// Best effort unsubscribe.
+	// Best-effort drain subscriptions (lets in-flight callbacks finish).
 	for _, s := range subs {
-		_ = s.Unsubscribe()
+		if s != nil {
+			_ = s.Drain()
+		}
 	}
 
-	if c.conn != nil {
-		c.conn.Close()
+	if conn == nil {
+		return
+	}
+
+	// Best-effort flush pending publishes.
+	_ = conn.FlushTimeout(2 * time.Second)
+
+	// Drain the connection gracefully, but don't risk hanging forever.
+	done := make(chan struct{})
+	go func() {
+		_ = conn.Drain() // Drain will close the connection when done.
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// drained successfully
+	case <-time.After(3 * time.Second):
+		// fallback: force close
+		conn.Close()
 	}
 }
