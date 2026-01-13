@@ -1,0 +1,19 @@
+# Go build artifacts
+/bin/
+/pkg/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+
+# Coverage
+*.out
+
+# IDE / editor
+.vscode/
+.idea/
+.DS_Store
