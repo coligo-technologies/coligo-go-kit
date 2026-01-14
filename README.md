@@ -8,6 +8,7 @@ A curated Go kit for reusable components used across COLIGO projects.
   - typed request / reply with a response envelope
   - safe subscription handlers (panic recovery, guaranteed responses)
   - JetStream Key-Value helpers
+  - org-wide notification contract (levels + publish helper)
 
 ## Goals
 
@@ -100,6 +101,61 @@ log.Printf(
 	resp.Data,
 )
 ```
+
+### Notifications (org-wide contract)
+
+The `nats` package also provides a standard, org-wide notification contract to avoid
+repeating schemas, severity levels, and publish logic across services.
+
+#### Notification levels
+
+Notification levels are exposed via a namespaced, enum-style API:
+
+```go
+nc.NotificationLevel.Debug
+nc.NotificationLevel.Info
+nc.NotificationLevel.Warning
+nc.NotificationLevel.Error
+nc.NotificationLevel.Critical
+```
+
+#### Creating a notification
+
+```go
+notif, err := nc.NewNotification(
+	fmt.Sprintf("High CPU usage: %.2f%%", cpuUsage),
+	nats.NotificationLevel.Warning,
+	map[string]any{
+		"usagePercent": cpuUsage,
+		"threshold":    80,
+	},
+	nats.NotificationOptions{
+		Group:   "service",
+		Service: "system-manager",
+	},
+)
+if err != nil {
+	log.Fatalf("failed to create notification: %v", err)
+}
+```
+
+The notification message should describe the event.
+Additional information is provided via the `data` field and may be empty or `nil`
+(in which case it is omitted from the JSON payload).
+
+#### Publishing a notification
+
+```go
+err = nc.PublishNotification(
+	"data.notifications.system-manager",
+	notif,
+)
+if err != nil {
+	log.Fatalf("failed to publish notification: %v", err)
+}
+```
+
+Notifications are published as JSON using the shared org-wide schema.
 
 ### JetStream KV
 
