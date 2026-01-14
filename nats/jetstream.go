@@ -28,3 +28,10 @@ func (c *Client) CreateJetStream(ctx context.Context) (*JetStream, error) {
 
 	return &JetStream{js: js}, nil
 }
+
+func (j *JetStream) Context() nc.JetStreamContext {
+	if j == nil {
+		return nil
+	}
+	return j.js
+}
