@@ -39,17 +39,17 @@ if err != nil {
 defer nc.Close()
 ```
 
-### Request/Reply (core NATS)
+### Request/Subscribe (core NATS)
 
 ```go
-// Subscribe and reply to requests
+// Subscribe and respond to requests
 _, _ = nc.Subscribe("events.user.created", func(ctx context.Context, msg *nats.Msg) error {
 	response := map[string]any{"status": "ok", "message": "user created"}
 	b, _ := json.Marshal(response)
 	return msg.Respond(b)
 })
 
-// Send a request and receive a reply
+// Send a request and receive a response
 msg, err := nc.Request("events.user.created", map[string]any{"id": "123"})
 if err != nil {
 	log.Fatalf("request failed: %v", err)
@@ -62,19 +62,7 @@ var resp struct {
 if err := json.Unmarshal(msg.Data, &resp); err != nil {
 	log.Fatalf("unmarshal response: %v", err)
 }
-log.Printf("got reply: status=%s message=%s", resp.Status, resp.Message)
-```
-
-### Subscribe (core NATS)
-
-```go
-_, _ = nc.Subscribe("events.>", func(ctx context.Context, msg *nats.Msg) error {
-	response := []byte(`{"status":"ok","message":"event processed successfully"}`)
-	if err := msg.Respond(response); err != nil {
-		log.Printf("failed to respond: %v", err)
-		return err
-	}
-})
+log.Printf("got response: status=%s message=%s", resp.Status, resp.Message)
 ```
 
 ### JetStream KV
