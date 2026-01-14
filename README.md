@@ -21,6 +21,12 @@ A curated Go kit for reusable components used across COLIGO projects.
 
 ## Usage
 
+### Installation
+
+```bash
+go get github.com/coligo-technologies/coligo-go-kit@latest
+```
+
 ### Connect
 
 ```go
