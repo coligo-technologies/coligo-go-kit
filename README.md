@@ -50,9 +50,12 @@ _ = nc.Publish("events.user.created", map[string]any{
 ### Subscribe (core NATS)
 
 ```go
-_, _ = nc.Subscribe("events.>", func(ctx context.Context, raw []byte) error {
-	// raw is the message payload
-	return nil
+_, _ = nc.Subscribe("events.>", func(ctx context.Context, msg *nats.Msg) error {
+	response := []byte(`{"status":"ok","message":"event processed successfully"}`)
+	if err := msg.Respond(response); err != nil {
+		log.Printf("failed to respond: %v", err)
+		return err
+	}
 })
 ```
 

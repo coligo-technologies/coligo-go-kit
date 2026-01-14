@@ -6,6 +6,7 @@ import (
 	"time"
 
 	kitnats "github.com/coligo-technologies/coligo-go-kit/nats"
+	nats "github.com/nats-io/nats.go"
 )
 
 func main() {
@@ -18,8 +19,15 @@ func main() {
 	}
 	defer nc.Close()
 
-	_, err = nc.Subscribe("demo.events", func(ctx context.Context, raw []byte) error {
-		log.Printf("got message: %s", string(raw))
+	_, err = nc.Subscribe("demo.events", func(ctx context.Context, msg *nats.Msg) error {
+		log.Printf("got message: %s", string(msg.Data))
+
+		response := []byte(`{"status":"ok","message":"event processed successfully"}`)
+		if err := msg.Respond(response); err != nil {
+			log.Printf("failed to respond: %v", err)
+			return err
+		}
+
 		return nil
 	})
 	if err != nil {

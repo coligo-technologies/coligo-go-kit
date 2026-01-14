@@ -30,7 +30,10 @@ func (c *Client) Publish(subject string, v any) error {
 	return nil
 }
 
-func (c *Client) Subscribe(subject string, handler func(context.Context, []byte) error) (Subscription, error) {
+func (c *Client) Subscribe(
+	subject string,
+	handler func(context.Context, *nc.Msg) error,
+) (Subscription, error) {
 	if c == nil || c.conn == nil {
 		return nil, errors.New("nats client is nil or closed")
 	}
@@ -44,7 +47,7 @@ func (c *Client) Subscribe(subject string, handler func(context.Context, []byte)
 	sub, err := c.conn.Subscribe(subject, func(m *nc.Msg) {
 		// Keep the callback non-blocking to NATS internals:
 		// run user code in a goroutine.
-		go func() {
+		go func(msg *nc.Msg) {
 			defer func() {
 				if r := recover(); r != nil {
 					log.Printf("nats: panic in handler for %q: %v\n%s", subject, r, string(debug.Stack()))
@@ -54,10 +57,10 @@ func (c *Client) Subscribe(subject string, handler func(context.Context, []byte)
 			// Context: currently background; later we can thread cancellation on Close if needed.
 			ctx := context.Background()
 
-			if err := handler(ctx, m.Data); err != nil {
+			if err := handler(ctx, msg); err != nil {
 				log.Printf("nats: handler error for %q: %v", subject, err)
 			}
-		}()
+		}(m)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("subscribe to %q: %w", subject, err)

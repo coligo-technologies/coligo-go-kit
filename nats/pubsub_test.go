@@ -7,6 +7,7 @@ import (
 
 	"github.com/coligo-technologies/coligo-go-kit/internal/testutil"
 	kitnats "github.com/coligo-technologies/coligo-go-kit/nats"
+	nats "github.com/nats-io/nats.go"
 )
 
 func TestPublishSubscribe_JSON(t *testing.T) {
@@ -24,9 +25,9 @@ func TestPublishSubscribe_JSON(t *testing.T) {
 
 	got := make(chan []byte, 1)
 
-	_, err = c.Subscribe("demo.events", func(ctx context.Context, raw []byte) error {
+	_, err = c.Subscribe("demo.events", func(ctx context.Context, msg *nats.Msg) error {
 		select {
-		case got <- raw:
+		case got <- msg.Data:
 		default:
 		}
 		return nil
