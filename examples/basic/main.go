@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"time"
 
 	kitnats "github.com/coligo-technologies/coligo-go-kit/nats"
-	nats "github.com/nats-io/nats.go"
 )
 
 func main() {
@@ -15,39 +15,50 @@ func main() {
 
 	nc, err := kitnats.NewClient(ctx, "nats://localhost:4222")
 	if err != nil {
-		log.Fatalf("Failed to connect to NATS: %v", err)
+		log.Fatalf("failed to connect to NATS: %v", err)
 	}
 	defer nc.Close()
 
-	_, err = nc.Subscribe("demo.events", func(ctx context.Context, msg *nats.Msg) error {
-		log.Printf("got request: %s", string(msg.Data))
+	_, err = nc.Subscribe("demo.events", func(raw []byte) (*kitnats.Response, error) {
+		log.Printf("got request: %s", string(raw))
 
-		response := []byte(`{"status":"ok","message":"event processed successfully"}`)
-		if err := msg.Respond(response); err != nil {
-			log.Printf("failed to respond: %v", err)
-			return err
+		var body any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			return kitnats.BadRequest("invalid JSON"), err
 		}
 
-		return nil
+		return kitnats.NewResponse(
+			200,
+			"echo",
+			map[string]any{"echo": body},
+		), nil
 	})
 	if err != nil {
 		log.Fatalf("subscribe failed: %v", err)
 	}
 
-	msg, err := nc.Request("demo.events", map[string]any{"hello": "world"})
+	resp, err := nc.Request("demo.events", map[string]any{
+		"hello": "world",
+	})
 	if err != nil {
 		log.Fatalf("request failed: %v", err)
 	}
-	log.Printf("got response: %s", string(msg.Data))
+
+	log.Printf(
+		"got response: status=%d message=%q data=%v",
+		resp.StatusCode,
+		resp.Message,
+		resp.Data,
+	)
 
 	js, err := nc.CreateJetStream(ctx)
 	if err != nil {
-		log.Fatalf("Failed to create JetStream: %v", err)
+		log.Fatalf("failed to create JetStream: %v", err)
 	}
 
 	kv, err := js.KV(ctx, "demo_bucket")
 	if err != nil {
-		log.Fatalf("Failed to open KV bucket: %v", err)
+		log.Fatalf("failed to open KV bucket: %v", err)
 	}
 
 	if err := kv.Save(ctx, "config", []byte(`{"a":1}`)); err != nil {
@@ -60,6 +71,6 @@ func main() {
 	}
 	log.Printf("kv loaded: %s", string(b))
 
-	// Give subscription goroutine a moment in this toy example.
+	// Give subscription a moment in this toy example.
 	time.Sleep(200 * time.Millisecond)
 }
