@@ -5,7 +5,9 @@ A curated Go kit for reusable components used across COLIGO projects.
 ## Packages
 
 - `nats` – helpers and conventions built on top of the official NATS Go client
-  (including core req/sub and JetStream Key-Value)
+  - typed request / reply with a response envelope
+  - safe subscription handlers (panic recovery, guaranteed responses)
+  - JetStream Key-Value helpers
 
 ## Goals
 
@@ -41,28 +43,62 @@ defer nc.Close()
 
 ### Request/Subscribe (core NATS)
 
-```go
-// Subscribe and respond to requests
-_, _ = nc.Subscribe("events.user.created", func(ctx context.Context, msg *nats.Msg) error {
-	response := map[string]any{"status": "ok", "message": "user created"}
-	b, _ := json.Marshal(response)
-	return msg.Respond(b)
-})
+The `nats` package provides a request–reply abstraction with a typed response envelope.
 
-// Send a request and receive a response
-msg, err := nc.Request("events.user.created", map[string]any{"id": "123"})
+#### Response envelope
+
+All responses use the same structure:
+
+```go
+type Response struct {
+	StatusCode int         `json:"statusCode"`
+	Message    string      `json:"message"`
+	Data       any         `json:"data,omitempty"`
+}
+```
+
+#### Subscribe
+
+Handlers:
+
+- receive the raw request payload (`[]byte`)
+- must always return a non-nil `*Response`
+- may return an error for logging or metrics
+
+```go
+_, err := nc.Subscribe("events.user.created", func(raw []byte) (*nats.Response, error) {
+	var body any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nats.BadRequest("invalid JSON"), err
+	}
+
+	return nats.NewResponse(
+		200,
+		"user created",
+		map[string]any{"echo": body},
+	), nil
+})
+if err != nil {
+	log.Fatalf("subscribe failed: %v", err)
+}
+```
+
+#### Request
+
+Requests automatically JSON-encode the payload and decode the response envelope.
+
+```go
+resp, err := nc.Request("events.user.created", map[string]any{"id": "123"})
 if err != nil {
 	log.Fatalf("request failed: %v", err)
 }
 
-var resp struct {
-	Status  string `json:"status"`
-	Message string `json:"message"`
-}
-if err := json.Unmarshal(msg.Data, &resp); err != nil {
-	log.Fatalf("unmarshal response: %v", err)
-}
-log.Printf("got response: status=%s message=%s", resp.Status, resp.Message)
+log.Printf(
+	"got response: status=%d message=%q data=%v",
+	resp.StatusCode,
+	resp.Message,
+	resp.Data,
+)
 ```
 
 ### JetStream KV

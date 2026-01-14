@@ -8,7 +8,6 @@ import (
 
 	"github.com/coligo-technologies/coligo-go-kit/internal/testutil"
 	kitnats "github.com/coligo-technologies/coligo-go-kit/nats"
-	nats "github.com/nats-io/nats.go"
 )
 
 func TestRequestSubscribe_JSON(t *testing.T) {
@@ -24,32 +23,49 @@ func TestRequestSubscribe_JSON(t *testing.T) {
 	}
 	defer c.Close()
 
-	_, err = c.Subscribe("demo.events", func(ctx context.Context, msg *nats.Msg) error {
-		response := map[string]any{"status": "ok", "echo": string(msg.Data)}
-		b, _ := json.Marshal(response)
-		return msg.Respond(b)
+	_, err = c.Subscribe("demo.events", func(raw []byte) (*kitnats.Response, error) {
+		var body any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			return kitnats.BadRequest("invalid JSON"), err
+		}
+
+		return kitnats.NewResponse(
+			200,
+			"echo",
+			map[string]any{"echo": body},
+		), nil
 	})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 
 	payload := map[string]any{"hello": "world"}
-	msg, err := c.Request("demo.events", payload)
+	resp, err := c.Request("demo.events", payload)
 	if err != nil {
 		t.Fatalf("Request: %v", err)
 	}
 
-	var resp struct {
-		Status string `json:"status"`
-		Echo   string `json:"echo"`
+	if resp.StatusCode != 200 {
+		t.Fatalf("unexpected status: got %d, want %d", resp.StatusCode, 200)
 	}
-	if err := json.Unmarshal(msg.Data, &resp); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
+
+	// Validate echo envelope shape
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected data type: got %T, want map[string]any", resp.Data)
 	}
-	if resp.Status != "ok" {
-		t.Errorf("unexpected status: got %q, want %q", resp.Status, "ok")
+
+	echo, ok := data["echo"]
+	if !ok {
+		t.Fatalf("missing data.echo")
 	}
-	if resp.Echo == "" {
-		t.Errorf("unexpected empty echo")
+
+	echoMap, ok := echo.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected echo type: got %T, want map[string]any", echo)
+	}
+
+	if got := echoMap["hello"]; got != "world" {
+		t.Fatalf("unexpected echo.hello: got %#v, want %q", got, "world")
 	}
 }
