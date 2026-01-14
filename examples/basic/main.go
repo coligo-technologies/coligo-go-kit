@@ -20,7 +20,7 @@ func main() {
 	defer nc.Close()
 
 	_, err = nc.Subscribe("demo.events", func(ctx context.Context, msg *nats.Msg) error {
-		log.Printf("got message: %s", string(msg.Data))
+		log.Printf("got request: %s", string(msg.Data))
 
 		response := []byte(`{"status":"ok","message":"event processed successfully"}`)
 		if err := msg.Respond(response); err != nil {
@@ -34,9 +34,11 @@ func main() {
 		log.Fatalf("subscribe failed: %v", err)
 	}
 
-	if err := nc.Publish("demo.events", map[string]any{"hello": "world"}); err != nil {
-		log.Fatalf("publish failed: %v", err)
+	msg, err := nc.Request("demo.events", map[string]any{"hello": "world"})
+	if err != nil {
+		log.Fatalf("request failed: %v", err)
 	}
+	log.Printf("got response: %s", string(msg.Data))
 
 	js, err := nc.CreateJetStream(ctx)
 	if err != nil {

@@ -5,7 +5,7 @@ A curated Go kit for reusable components used across COLIGO projects.
 ## Packages
 
 - `nats` – helpers and conventions built on top of the official NATS Go client
-  (including core pub/sub and JetStream Key-Value)
+  (including core req/sub and JetStream Key-Value)
 
 ## Goals
 
@@ -39,12 +39,30 @@ if err != nil {
 defer nc.Close()
 ```
 
-### Publish JSON (core NATS)
+### Request/Reply (core NATS)
 
 ```go
-_ = nc.Publish("events.user.created", map[string]any{
-	"id": "123",
+// Subscribe and reply to requests
+_, _ = nc.Subscribe("events.user.created", func(ctx context.Context, msg *nats.Msg) error {
+	response := map[string]any{"status": "ok", "message": "user created"}
+	b, _ := json.Marshal(response)
+	return msg.Respond(b)
 })
+
+// Send a request and receive a reply
+msg, err := nc.Request("events.user.created", map[string]any{"id": "123"})
+if err != nil {
+	log.Fatalf("request failed: %v", err)
+}
+
+var resp struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+if err := json.Unmarshal(msg.Data, &resp); err != nil {
+	log.Fatalf("unmarshal response: %v", err)
+}
+log.Printf("got reply: status=%s message=%s", resp.Status, resp.Message)
 ```
 
 ### Subscribe (core NATS)

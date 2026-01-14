@@ -7,27 +7,31 @@ import (
 	"fmt"
 	"log"
 	"runtime/debug"
+	"time"
 
+	"github.com/nats-io/nats.go"
 	nc "github.com/nats-io/nats.go"
 )
 
-func (c *Client) Publish(subject string, v any) error {
+func (c *Client) Request(subject string, v any) (*nats.Msg, error) {
 	if c == nil || c.conn == nil {
-		return errors.New("nats client is nil or closed")
+		return nil, errors.New("nats client is nil or closed")
 	}
 	if subject == "" {
-		return errors.New("subject must not be empty")
+		return nil, errors.New("subject must not be empty")
 	}
 
 	b, err := json.Marshal(v)
 	if err != nil {
-		return fmt.Errorf("marshal json for publish on %q: %w", subject, err)
+		return nil, fmt.Errorf("marshal json for request on %q: %w", subject, err)
 	}
 
-	if err := c.conn.Publish(subject, b); err != nil {
-		return fmt.Errorf("publish on %q: %w", subject, err)
+	msg, err := c.conn.Request(subject, b, 2*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("request on %q: %w", subject, err)
 	}
-	return nil
+
+	return msg, nil
 }
 
 func (c *Client) Subscribe(

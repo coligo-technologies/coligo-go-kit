@@ -2,6 +2,7 @@ package nats_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 	nats "github.com/nats-io/nats.go"
 )
 
-func TestPublishSubscribe_JSON(t *testing.T) {
+func TestRequestSubscribe_JSON(t *testing.T) {
 	s, url := testutil.StartServer(t)
 	defer s.Shutdown()
 
@@ -23,35 +24,32 @@ func TestPublishSubscribe_JSON(t *testing.T) {
 	}
 	defer c.Close()
 
-	got := make(chan []byte, 1)
-
 	_, err = c.Subscribe("demo.events", func(ctx context.Context, msg *nats.Msg) error {
-		select {
-		case got <- msg.Data:
-		default:
-		}
-		return nil
+		response := map[string]any{"status": "ok", "echo": string(msg.Data)}
+		b, _ := json.Marshal(response)
+		return msg.Respond(b)
 	})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 
 	payload := map[string]any{"hello": "world"}
-	if err := c.Publish("demo.events", payload); err != nil {
-		t.Fatalf("Publish: %v", err)
+	msg, err := c.Request("demo.events", payload)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
 	}
 
-	select {
-	case b := <-got:
-		// We don't assert exact JSON bytes (map order), just that it's valid + contains key.
-		if len(b) == 0 {
-			t.Fatalf("got empty payload")
-		}
-		// Minimal check without bringing in extra deps:
-		if string(b) == "{}" {
-			t.Fatalf("got unexpected empty json object")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("timeout waiting for message")
+	var resp struct {
+		Status string `json:"status"`
+		Echo   string `json:"echo"`
+	}
+	if err := json.Unmarshal(msg.Data, &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Status != "ok" {
+		t.Errorf("unexpected status: got %q, want %q", resp.Status, "ok")
+	}
+	if resp.Echo == "" {
+		t.Errorf("unexpected empty echo")
 	}
 }

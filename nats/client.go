@@ -119,7 +119,7 @@ func (c *Client) Close() {
 		return
 	}
 
-	// Best-effort flush pending publishes.
+	// Best-effort flush pending requests.
 	_ = conn.FlushTimeout(2 * time.Second)
 
 	// Drain the connection gracefully, but don't risk hanging forever.
