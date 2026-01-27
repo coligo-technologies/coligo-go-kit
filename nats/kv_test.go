@@ -48,6 +48,15 @@ func TestKV_SaveLoadUpdateDelete(t *testing.T) {
 		t.Fatalf("Load mismatch: got %q want %q", got, v1)
 	}
 
+	// ---- LoadAll (single key) ----
+	all, err := kv.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if got := all["k"]; !bytes.Equal(got, v1) {
+		t.Fatalf("LoadAll mismatch: got %q want %q", got, v1)
+	}
+
 	// Update
 	v2 := []byte("two")
 	if err := kv.Update(ctx, "k", v2); err != nil {
@@ -61,13 +70,32 @@ func TestKV_SaveLoadUpdateDelete(t *testing.T) {
 		t.Fatalf("Load after Update mismatch: got %q want %q", got, v2)
 	}
 
+	// ---- LoadAll after update ----
+	all, err = kv.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll after update: %v", err)
+	}
+	if got := all["k"]; !bytes.Equal(got, v2) {
+		t.Fatalf("LoadAll after update mismatch: got %q want %q", got, v2)
+	}
+
 	// Delete
 	if err := kv.Delete(ctx, "k"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
+
 	_, err = kv.Load(ctx, "k")
 	if err == nil {
 		t.Fatalf("expected error after delete, got nil")
+	}
+
+	// ---- LoadAll after delete ----
+	all, err = kv.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll after delete: %v", err)
+	}
+	if _, ok := all["k"]; ok {
+		t.Fatalf("LoadAll should not include deleted key")
 	}
 }
 
