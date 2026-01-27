@@ -16,7 +16,8 @@ func startTestServer(t *testing.T) *natssrv.Server {
 	t.Helper()
 
 	s, err := natssrv.NewServer(&natssrv.Options{
-		Port: -1, // random free port
+		Host: "127.0.0.1",
+		Port: -1,
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)

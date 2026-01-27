@@ -170,3 +170,51 @@ func (k *KV) Load(ctx context.Context, key string) ([]byte, error) {
 	val := append([]byte(nil), entry.Value()...)
 	return val, nil
 }
+
+func (k *KV) LoadAll(ctx context.Context) (map[string][]byte, error) {
+	if k == nil || k.kv == nil {
+		return nil, errors.New("kv is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	keys, err := k.kv.Keys()
+	if err != nil {
+		// Empty bucket is not an error; return empty result.
+		if errors.Is(err, nc.ErrNoKeysFound) {
+			return map[string][]byte{}, nil
+		}
+		return nil, fmt.Errorf("kv loadAll: list keys: %w", err)
+	}
+
+	out := make(map[string][]byte, len(keys))
+	for _, key := range keys {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if key == "" {
+			continue
+		}
+
+		entry, err := k.kv.Get(key)
+		if err != nil {
+			if errors.Is(err, nc.ErrKeyNotFound) {
+				continue
+			}
+			return nil, fmt.Errorf("kv loadAll %q: %w", key, err)
+		}
+
+		if entry.Operation() == nc.KeyValueDelete || entry.Operation() == nc.KeyValuePurge {
+			continue
+		}
+
+		k.mu.Lock()
+		k.revs[key] = entry.Revision()
+		k.mu.Unlock()
+
+		out[key] = append([]byte(nil), entry.Value()...)
+	}
+
+	return out, nil
+}
