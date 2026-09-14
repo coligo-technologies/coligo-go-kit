@@ -5,9 +5,26 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	nc "github.com/nats-io/nats.go"
 )
+
+var (
+	ErrKVKeyNotFound      = errors.New("nats kv key not found")
+	ErrKVRevisionConflict = errors.New("nats kv revision conflict")
+)
+
+type KVEntry struct {
+	Value    []byte
+	Revision uint64
+}
+
+type KVStatus struct {
+	Bucket  string
+	History int64
+	TTL     time.Duration
+}
 
 type KV struct {
 	kv nc.KeyValue
@@ -169,6 +186,112 @@ func (k *KV) Load(ctx context.Context, key string) ([]byte, error) {
 	// Copy to decouple from underlying buffer usage.
 	val := append([]byte(nil), entry.Value()...)
 	return val, nil
+}
+
+// LoadEntry loads a value together with its server-assigned revision.
+func (k *KV) LoadEntry(ctx context.Context, key string) (KVEntry, error) {
+	if k == nil || k.kv == nil {
+		return KVEntry{}, errors.New("kv is nil")
+	}
+	if key == "" {
+		return KVEntry{}, errors.New("key must not be empty")
+	}
+	if err := ctx.Err(); err != nil {
+		return KVEntry{}, err
+	}
+
+	entry, err := k.kv.Get(key)
+	if errors.Is(err, nc.ErrKeyNotFound) || errors.Is(err, nc.ErrKeyDeleted) {
+		return KVEntry{}, fmt.Errorf("kv load %q: %w", key, ErrKVKeyNotFound)
+	}
+	if err != nil {
+		return KVEntry{}, fmt.Errorf("kv load %q: %w", key, err)
+	}
+
+	return KVEntry{
+		Value:    append([]byte(nil), entry.Value()...),
+		Revision: entry.Revision(),
+	}, nil
+}
+
+// Create creates a key only when it does not already exist.
+func (k *KV) Create(ctx context.Context, key string, value []byte) (uint64, error) {
+	if k == nil || k.kv == nil {
+		return 0, errors.New("kv is nil")
+	}
+	if key == "" {
+		return 0, errors.New("key must not be empty")
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	revision, err := k.kv.Create(key, value)
+	if isKVRevisionConflict(err) {
+		return 0, fmt.Errorf("kv create %q: %w", key, ErrKVRevisionConflict)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("kv create %q: %w", key, err)
+	}
+	return revision, nil
+}
+
+// UpdateRevision updates a key only when expectedRevision is still current.
+func (k *KV) UpdateRevision(ctx context.Context, key string, value []byte, expectedRevision uint64) (uint64, error) {
+	if k == nil || k.kv == nil {
+		return 0, errors.New("kv is nil")
+	}
+	if key == "" {
+		return 0, errors.New("key must not be empty")
+	}
+	if expectedRevision == 0 {
+		return 0, errors.New("expected revision must be positive")
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	revision, err := k.kv.Update(key, value, expectedRevision)
+	if isKVRevisionConflict(err) {
+		return 0, fmt.Errorf("kv update %q: %w", key, ErrKVRevisionConflict)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("kv update %q: %w", key, err)
+	}
+	return revision, nil
+}
+
+// Status returns the bucket properties needed for readiness checks.
+func (k *KV) Status(ctx context.Context) (KVStatus, error) {
+	if k == nil || k.kv == nil {
+		return KVStatus{}, errors.New("kv is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return KVStatus{}, err
+	}
+
+	status, err := k.kv.Status()
+	if err != nil {
+		return KVStatus{}, fmt.Errorf("kv status: %w", err)
+	}
+	return KVStatus{
+		Bucket:  status.Bucket(),
+		History: status.History(),
+		TTL:     status.TTL(),
+	}, nil
+}
+
+func isKVRevisionConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, nc.ErrKeyExists) {
+		return true
+	}
+	var jetStreamError nc.JetStreamError
+	return errors.As(err, &jetStreamError) &&
+		jetStreamError.APIError() != nil &&
+		jetStreamError.APIError().ErrorCode == nc.JSErrCodeStreamWrongLastSequence
 }
 
 func (k *KV) LoadAll(ctx context.Context) (map[string][]byte, error) {

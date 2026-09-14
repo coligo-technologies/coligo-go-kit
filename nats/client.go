@@ -20,6 +20,8 @@ type Client struct {
 	subs []*nc.Subscription
 }
 
+var errClientClosed = errors.New("nats client is nil or closed")
+
 func NewClient(ctx context.Context, url string) (*Client, error) {
 	if url == "" {
 		return nil, errors.New("nats url must not be empty")
@@ -94,6 +96,34 @@ func NewClient(ctx context.Context, url string) (*Client, error) {
 			return nil, fmt.Errorf("connect to nats: %w (last error: %v)", err, lastErr)
 		}
 	}
+}
+
+// Connected reports whether the client currently has an active NATS connection.
+func (c *Client) Connected() bool {
+	conn, err := c.connection()
+	return err == nil && conn.IsConnected()
+}
+
+// Flush sends any buffered writes to the NATS server.
+func (c *Client) Flush() error {
+	conn, err := c.connection()
+	if err != nil {
+		return err
+	}
+
+	return conn.Flush()
+}
+
+func (c *Client) connection() (*nc.Conn, error) {
+	if c == nil {
+		return nil, errClientClosed
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn == nil {
+		return nil, errClientClosed
+	}
+	return c.conn, nil
 }
 
 func (c *Client) Close() {

@@ -12,8 +12,8 @@ import (
 )
 
 func (c *Client) Request(subject string, jsonBody any) (*Response, error) {
-	if c == nil || c.conn == nil {
-		err := errors.New("nats client is nil or closed")
+	conn, err := c.connection()
+	if err != nil {
 		return BadRequest(err.Error()), err
 	}
 	if subject == "" {
@@ -29,7 +29,7 @@ func (c *Client) Request(subject string, jsonBody any) (*Response, error) {
 			fmt.Errorf("marshal request for %q: %w", subject, err)
 	}
 
-	msg, err := c.conn.Request(subject, b, 2*time.Second)
+	msg, err := conn.Request(subject, b, 2*time.Second)
 	if err != nil {
 		if errors.Is(err, nats.ErrTimeout) {
 			return GatewayTimeout(
@@ -58,9 +58,6 @@ func (c *Client) Subscribe(
 	subject string,
 	handler func([]byte) (*Response, error),
 ) (Subscription, error) {
-	if c == nil || c.conn == nil {
-		return nil, errors.New("nats client is nil or closed")
-	}
 	if subject == "" {
 		return nil, errors.New("subject must not be empty")
 	}
@@ -68,7 +65,7 @@ func (c *Client) Subscribe(
 		return nil, errors.New("handler must not be nil")
 	}
 
-	sub, err := c.conn.Subscribe(subject, func(m *nats.Msg) {
+	return c.subscribe(subject, func(m *nats.Msg) {
 		// Keep reply logic local to the handler to avoid extra helpers on Client.
 		respond := func(resp *Response) {
 			b, err := json.Marshal(resp)
@@ -100,13 +97,4 @@ func (c *Client) Subscribe(
 
 		respond(resp)
 	})
-	if err != nil {
-		return nil, fmt.Errorf("subscribe to %q: %w", subject, err)
-	}
-
-	c.mu.Lock()
-	c.subs = append(c.subs, sub)
-	c.mu.Unlock()
-
-	return subscription{s: sub}, nil
 }

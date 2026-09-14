@@ -7,6 +7,7 @@ A curated Go kit for reusable components used across COLIGO projects.
 - `nats` – helpers and conventions built on top of the official NATS Go client
   - typed request / reply with a response envelope
   - safe subscription handlers (panic recovery, guaranteed responses)
+  - subject-aware fire-and-forget event subscriptions
   - JetStream Key-Value helpers
   - org-wide notification contract (levels + publish helper)
 
@@ -102,6 +103,22 @@ log.Printf(
 )
 ```
 
+#### Events
+
+Fire-and-forget subscriptions expose the actual matched subject, including for
+wildcard subscriptions, and do not publish a response. Event handlers run
+synchronously and should return quickly.
+
+```go
+_, err := nc.SubscribeEvent("doc.>", func(message nats.Message) error {
+	log.Printf("received %s: %s", message.Subject, message.Data)
+	return nil
+})
+if err != nil {
+	log.Fatalf("subscribe failed: %v", err)
+}
+```
+
 ### Notifications (org-wide contract)
 
 The `nats` package also provides a standard, org-wide notification contract to avoid
@@ -176,6 +193,9 @@ b, _ := kv.Load(ctx, "feature_flags")
 _ = kv.Update(ctx, "feature_flags", []byte(`{"a":false}`))
 _ = kv.Delete(ctx, "feature_flags")
 ```
+
+For optimistic concurrency, use `LoadEntry`, `Create`, and `UpdateRevision`.
+Revision conflicts are reported as `nats.ErrKVRevisionConflict`.
 
 ## Releasing
 
