@@ -82,13 +82,14 @@ func NewNotification(
 }
 
 func (c *Client) PublishNotification(subject string, n Notification) error {
-	if c == nil || c.conn == nil {
-		return errors.New("nats client is nil or closed")
+	conn, err := c.connection()
+	if err != nil {
+		return err
 	}
 
 	b, err := json.Marshal(n)
 	if err != nil {
 		return err
 	}
-	return c.conn.Publish(subject, b)
+	return conn.Publish(subject, b)
 }
