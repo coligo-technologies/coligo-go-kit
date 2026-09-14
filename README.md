@@ -194,6 +194,9 @@ _ = kv.Update(ctx, "feature_flags", []byte(`{"a":false}`))
 _ = kv.Delete(ctx, "feature_flags")
 ```
 
+For optimistic concurrency, use `LoadEntry`, `Create`, and `UpdateRevision`.
+Revision conflicts are reported as `nats.ErrKVRevisionConflict`.
+
 ## Releasing
 
 Development happens on the `development` branch. Releases are promoted to `main` via an automated PR and a GitHub Release.
