@@ -28,6 +28,7 @@ type KVStatus struct {
 
 type KV struct {
 	kv nc.KeyValue
+	js nc.JetStreamContext
 
 	mu   sync.Mutex
 	revs map[string]uint64 // key -> last known revision
@@ -63,6 +64,7 @@ func (js *JetStream) KV(ctx context.Context, bucket string) (*KV, error) {
 
 	return &KV{
 		kv:   kv,
+		js:   js.js,
 		revs: make(map[string]uint64),
 	}, nil
 }
@@ -159,6 +161,24 @@ func (k *KV) Delete(ctx context.Context, key string) error {
 
 	k.mu.Lock()
 	delete(k.revs, key)
+	k.mu.Unlock()
+	return nil
+}
+
+// Clear removes all values and history while keeping the bucket configuration.
+// Callers must stop writes to the bucket before clearing it.
+func (k *KV) Clear(ctx context.Context) error {
+	if k == nil || k.kv == nil || k.js == nil {
+		return errors.New("kv is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := k.js.PurgeStream("KV_"+k.kv.Bucket(), nc.Context(ctx)); err != nil {
+		return fmt.Errorf("kv clear %q: %w", k.kv.Bucket(), err)
+	}
+	k.mu.Lock()
+	clear(k.revs)
 	k.mu.Unlock()
 	return nil
 }

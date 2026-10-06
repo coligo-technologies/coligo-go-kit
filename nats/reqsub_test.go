@@ -3,6 +3,7 @@ package nats_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -67,5 +68,95 @@ func TestRequestSubscribe_JSON(t *testing.T) {
 
 	if got := echoMap["hello"]; got != "world" {
 		t.Fatalf("unexpected echo.hello: got %#v, want %q", got, "world")
+	}
+}
+
+func TestSubscribeConcurrentDoesNotQueueRequests(t *testing.T) {
+	s, url := testutil.StartServer(t)
+	defer s.Shutdown()
+	c, err := kitnats.NewClient(context.Background(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	started, finish := make(chan struct{}), make(chan struct{})
+	defer func() {
+		select {
+		case <-finish:
+		default:
+			close(finish)
+		}
+	}()
+	_, err = c.SubscribeConcurrent("reset", func(raw []byte) (*kitnats.Response, error) {
+		if string(raw) == `"first"` {
+			close(started)
+			<-finish
+			return kitnats.NewResponse(200, "finished", nil), nil
+		}
+		return kitnats.NewResponse(409, "in progress", nil), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		response, err := c.Request("reset", "first")
+		if err == nil && response.StatusCode != 200 {
+			err = fmt.Errorf("got status %d, want 200", response.StatusCode)
+		}
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first request did not start")
+	}
+	response, err := c.Request("reset", "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != 409 {
+		t.Fatalf("got status %d, want 409", response.StatusCode)
+	}
+	select {
+	case <-done:
+		t.Fatal("first request finished before cleanup was released")
+	default:
+	}
+	close(finish)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first request did not finish after cleanup")
+	}
+}
+
+func TestSubscribeConcurrentRecoversPanics(t *testing.T) {
+	s, url := testutil.StartServer(t)
+	defer s.Shutdown()
+	c, err := kitnats.NewClient(context.Background(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, err = c.SubscribeConcurrent("panic", func([]byte) (*kitnats.Response, error) { panic("boom") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	response, err := c.Request("panic", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != 500 {
+		t.Fatalf("got status %d, want 500", response.StatusCode)
 	}
 }

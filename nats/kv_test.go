@@ -211,3 +211,61 @@ func TestKV_UpdateWithoutPriorLoadStillWorks(t *testing.T) {
 		t.Fatalf("Load mismatch: got %q want %q", got, "v2")
 	}
 }
+
+func TestKVClearPreservesBucketAndAllowsReuse(t *testing.T) {
+	s, url := testutil.StartServer(t)
+	defer s.Shutdown()
+	ctx := context.Background()
+	c, err := kitnats.NewClient(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	js, err := c.CreateJetStream(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kv, err := js.KV(ctx, "clear_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := kv.Save(ctx, "provider", []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := kv.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := kv.Clear(cancelled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, want context.Canceled", err)
+	}
+	if _, err := kv.Load(ctx, "provider"); err != nil {
+		t.Fatalf("cancelled clear removed data: %v", err)
+	}
+	if err := kv.Clear(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := js.Context().StreamInfo("KV_clear_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stream.State.Msgs != 0 {
+		t.Fatalf("clear left %d messages", stream.State.Msgs)
+	}
+	after, err := kv.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatalf("bucket config changed: before=%+v after=%+v", before, after)
+	}
+	if err := kv.Update(ctx, "provider", []byte("new")); err != nil {
+		t.Fatalf("reuse after clear: %v", err)
+	}
+	value, err := kv.Load(ctx, "provider")
+	if err != nil || string(value) != "new" {
+		t.Fatalf("got %q, %v", value, err)
+	}
+}

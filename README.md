@@ -85,6 +85,8 @@ if err != nil {
 }
 ```
 
+Use `SubscribeConcurrent` instead of `Subscribe` when requests must run independently, such as rejecting overlapping reset requests. Concurrent handlers must synchronize shared state.
+
 #### Request
 
 Requests automatically JSON-encode the payload and decode the response envelope.
@@ -195,6 +197,8 @@ _ = kv.Delete(ctx, "feature_flags")
 ```
 
 For optimistic concurrency, use `LoadEntry`, `Create`, and `UpdateRevision`.
+`kv.Clear(ctx)` removes all values and history without deleting the bucket. Stop bucket writes before clearing it.
+
 Revision conflicts are reported as `nats.ErrKVRevisionConflict`.
 
 ## Releasing

@@ -58,6 +58,16 @@ func (c *Client) Subscribe(
 	subject string,
 	handler func([]byte) (*Response, error),
 ) (Subscription, error) {
+	return c.subscribeRequest(subject, handler, false)
+}
+
+// SubscribeConcurrent runs each request handler in its own goroutine. Handlers
+// must synchronize shared state; requests may complete out of order.
+func (c *Client) SubscribeConcurrent(subject string, handler func([]byte) (*Response, error)) (Subscription, error) {
+	return c.subscribeRequest(subject, handler, true)
+}
+
+func (c *Client) subscribeRequest(subject string, handler func([]byte) (*Response, error), concurrent bool) (Subscription, error) {
 	if subject == "" {
 		return nil, errors.New("subject must not be empty")
 	}
@@ -65,7 +75,7 @@ func (c *Client) Subscribe(
 		return nil, errors.New("handler must not be nil")
 	}
 
-	return c.subscribe(subject, func(m *nats.Msg) {
+	handle := func(m *nats.Msg) {
 		// Keep reply logic local to the handler to avoid extra helpers on Client.
 		respond := func(resp *Response) {
 			b, err := json.Marshal(resp)
@@ -96,5 +106,13 @@ func (c *Client) Subscribe(
 		}
 
 		respond(resp)
+	}
+
+	return c.subscribe(subject, func(m *nats.Msg) {
+		if concurrent {
+			go handle(m)
+		} else {
+			handle(m)
+		}
 	})
 }
