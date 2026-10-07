@@ -3,6 +3,6 @@
 //
 // - Core NATS request/reply is JSON-only.
 // - Core NATS event subscriptions expose subjects and raw payloads.
-// - JetStream is used only for Key-Value (KV).
+// - JetStream provides context-aware KV operations and bounded event history.
 // - Defaults are baked in; no options/config surface is exposed.
 package nats

@@ -2,6 +2,7 @@ package nats
 
 import (
 	"fmt"
+	"slices"
 
 	nc "github.com/nats-io/nats.go"
 )
@@ -11,7 +12,8 @@ type Subscription interface {
 }
 
 type subscription struct {
-	s *nc.Subscription
+	s      *nc.Subscription
+	client *Client
 }
 
 func (c *Client) subscribe(subject string, handler nc.MsgHandler) (Subscription, error) {
@@ -30,12 +32,18 @@ func (c *Client) subscribe(subject string, handler nc.MsgHandler) (Subscription,
 		return nil, fmt.Errorf("subscribe to %q: %w", subject, err)
 	}
 	c.subs = append(c.subs, sub)
-	return subscription{s: sub}, nil
+	return subscription{s: sub, client: c}, nil
 }
 
 func (s subscription) Unsubscribe() error {
 	if s.s == nil {
 		return nil
 	}
-	return s.s.Unsubscribe()
+	err := s.s.Unsubscribe()
+	if err == nil {
+		s.client.mu.Lock()
+		s.client.subs = slices.DeleteFunc(s.client.subs, func(sub *nc.Subscription) bool { return sub == s.s })
+		s.client.mu.Unlock()
+	}
+	return err
 }
