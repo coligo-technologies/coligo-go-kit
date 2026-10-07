@@ -8,6 +8,7 @@ import (
 	"time"
 
 	nc "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 var (
@@ -27,15 +28,15 @@ type KVStatus struct {
 }
 
 type KV struct {
-	kv nc.KeyValue
-	js nc.JetStreamContext
+	kv jetstream.KeyValue
+	js jetstream.JetStream
 
 	mu   sync.Mutex
 	revs map[string]uint64 // key -> last known revision
 }
 
 func (js *JetStream) KV(ctx context.Context, bucket string) (*KV, error) {
-	if js == nil || js.js == nil {
+	if js == nil || js.api == nil {
 		return nil, errors.New("jetstream is nil")
 	}
 	if bucket == "" {
@@ -45,26 +46,26 @@ func (js *JetStream) KV(ctx context.Context, bucket string) (*KV, error) {
 		return nil, err
 	}
 
-	kv, err := js.js.KeyValue(bucket)
+	kv, err := js.api.KeyValue(ctx, bucket)
 	if err != nil {
 		// Auto-create if missing.
-		if errors.Is(err, nc.ErrBucketNotFound) {
-			cfg := &nc.KeyValueConfig{
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
+			cfg := jetstream.KeyValueConfig{
 				Bucket:   bucket,
 				History:  1,
-				Storage:  nc.FileStorage,
+				Storage:  jetstream.FileStorage,
 				Replicas: 1,
 			}
-			kv, err = js.js.CreateKeyValue(cfg)
+			kv, err = js.api.CreateKeyValue(ctx, cfg)
 		}
 	}
 	if err != nil {
-		return nil, fmt.Errorf("open/create kv bucket %q: %w", bucket, err)
+		return nil, fmt.Errorf("open/create kv bucket %q: %w", bucket, transportError(err))
 	}
 
 	return &KV{
 		kv:   kv,
-		js:   js.js,
+		js:   js.api,
 		revs: make(map[string]uint64),
 	}, nil
 }
@@ -80,9 +81,9 @@ func (k *KV) Save(ctx context.Context, key string, value []byte) error {
 		return err
 	}
 
-	rev, err := k.kv.Put(key, value)
+	rev, err := k.kv.Put(ctx, key, value)
 	if err != nil {
-		return fmt.Errorf("kv save %q: %w", key, err)
+		return fmt.Errorf("kv save %q: %w", key, transportError(err))
 	}
 
 	k.mu.Lock()
@@ -109,25 +110,25 @@ func (k *KV) Update(ctx context.Context, key string, value []byte) error {
 	k.mu.Unlock()
 
 	if last == 0 {
-		entry, err := k.kv.Get(key)
+		entry, err := k.kv.Get(ctx, key)
 		if err != nil {
 			// If missing, fall back to Save (creates/overwrites).
-			if errors.Is(err, nc.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				return k.Save(ctx, key, value)
 			}
-			return fmt.Errorf("kv update %q: load current revision: %w", key, err)
+			return fmt.Errorf("kv update %q: load current revision: %w", key, transportError(err))
 		}
 		last = entry.Revision()
 	}
 
-	rev, err := k.kv.Update(key, value, last)
+	rev, err := k.kv.Update(ctx, key, value, last)
 	if err != nil {
 		// Single-writer assumption: refresh revision and retry once.
-		entry, gerr := k.kv.Get(key)
+		entry, gerr := k.kv.Get(ctx, key)
 		if gerr == nil {
 			last2 := entry.Revision()
 			if last2 != last {
-				if rev2, err2 := k.kv.Update(key, value, last2); err2 == nil {
+				if rev2, err2 := k.kv.Update(ctx, key, value, last2); err2 == nil {
 					rev, err = rev2, nil
 					last = last2
 				}
@@ -135,7 +136,7 @@ func (k *KV) Update(ctx context.Context, key string, value []byte) error {
 		}
 	}
 	if err != nil {
-		return fmt.Errorf("kv update %q: %w", key, err)
+		return fmt.Errorf("kv update %q: %w", key, transportError(err))
 	}
 
 	k.mu.Lock()
@@ -155,8 +156,8 @@ func (k *KV) Delete(ctx context.Context, key string) error {
 		return err
 	}
 
-	if err := k.kv.Delete(key); err != nil {
-		return fmt.Errorf("kv delete %q: %w", key, err)
+	if err := k.kv.Delete(ctx, key); err != nil {
+		return fmt.Errorf("kv delete %q: %w", key, transportError(err))
 	}
 
 	k.mu.Lock()
@@ -174,8 +175,12 @@ func (k *KV) Clear(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := k.js.PurgeStream("KV_"+k.kv.Bucket(), nc.Context(ctx)); err != nil {
-		return fmt.Errorf("kv clear %q: %w", k.kv.Bucket(), err)
+	stream, err := k.js.Stream(ctx, "KV_"+k.kv.Bucket())
+	if err != nil {
+		return fmt.Errorf("kv clear %q: %w", k.kv.Bucket(), transportError(err))
+	}
+	if err := stream.Purge(ctx); err != nil {
+		return fmt.Errorf("kv clear %q: %w", k.kv.Bucket(), transportError(err))
 	}
 	k.mu.Lock()
 	clear(k.revs)
@@ -194,9 +199,12 @@ func (k *KV) Load(ctx context.Context, key string) ([]byte, error) {
 		return nil, err
 	}
 
-	entry, err := k.kv.Get(key)
+	entry, err := k.kv.Get(ctx, key)
 	if err != nil {
-		return nil, fmt.Errorf("kv load %q: %w", key, err)
+		if errors.Is(err, jetstream.ErrKeyNotFound) || errors.Is(err, jetstream.ErrKeyDeleted) {
+			err = errors.Join(ErrKVKeyNotFound, nc.ErrKeyNotFound, err)
+		}
+		return nil, fmt.Errorf("kv load %q: %w", key, transportError(err))
 	}
 
 	k.mu.Lock()
@@ -220,12 +228,12 @@ func (k *KV) LoadEntry(ctx context.Context, key string) (KVEntry, error) {
 		return KVEntry{}, err
 	}
 
-	entry, err := k.kv.Get(key)
-	if errors.Is(err, nc.ErrKeyNotFound) || errors.Is(err, nc.ErrKeyDeleted) {
+	entry, err := k.kv.Get(ctx, key)
+	if errors.Is(err, jetstream.ErrKeyNotFound) || errors.Is(err, jetstream.ErrKeyDeleted) {
 		return KVEntry{}, fmt.Errorf("kv load %q: %w", key, ErrKVKeyNotFound)
 	}
 	if err != nil {
-		return KVEntry{}, fmt.Errorf("kv load %q: %w", key, err)
+		return KVEntry{}, fmt.Errorf("kv load %q: %w", key, transportError(err))
 	}
 
 	return KVEntry{
@@ -246,12 +254,12 @@ func (k *KV) Create(ctx context.Context, key string, value []byte) (uint64, erro
 		return 0, err
 	}
 
-	revision, err := k.kv.Create(key, value)
+	revision, err := k.kv.Create(ctx, key, value)
 	if isKVRevisionConflict(err) {
 		return 0, fmt.Errorf("kv create %q: %w", key, ErrKVRevisionConflict)
 	}
 	if err != nil {
-		return 0, fmt.Errorf("kv create %q: %w", key, err)
+		return 0, fmt.Errorf("kv create %q: %w", key, transportError(err))
 	}
 	return revision, nil
 }
@@ -271,12 +279,12 @@ func (k *KV) UpdateRevision(ctx context.Context, key string, value []byte, expec
 		return 0, err
 	}
 
-	revision, err := k.kv.Update(key, value, expectedRevision)
+	revision, err := k.kv.Update(ctx, key, value, expectedRevision)
 	if isKVRevisionConflict(err) {
 		return 0, fmt.Errorf("kv update %q: %w", key, ErrKVRevisionConflict)
 	}
 	if err != nil {
-		return 0, fmt.Errorf("kv update %q: %w", key, err)
+		return 0, fmt.Errorf("kv update %q: %w", key, transportError(err))
 	}
 	return revision, nil
 }
@@ -290,9 +298,9 @@ func (k *KV) Status(ctx context.Context) (KVStatus, error) {
 		return KVStatus{}, err
 	}
 
-	status, err := k.kv.Status()
+	status, err := k.kv.Status(ctx)
 	if err != nil {
-		return KVStatus{}, fmt.Errorf("kv status: %w", err)
+		return KVStatus{}, fmt.Errorf("kv status: %w", transportError(err))
 	}
 	return KVStatus{
 		Bucket:  status.Bucket(),
@@ -305,13 +313,13 @@ func isKVRevisionConflict(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, nc.ErrKeyExists) {
+	if errors.Is(err, jetstream.ErrKeyExists) {
 		return true
 	}
-	var jetStreamError nc.JetStreamError
+	var jetStreamError jetstream.JetStreamError
 	return errors.As(err, &jetStreamError) &&
 		jetStreamError.APIError() != nil &&
-		jetStreamError.APIError().ErrorCode == nc.JSErrCodeStreamWrongLastSequence
+		jetStreamError.APIError().ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence
 }
 
 func (k *KV) LoadAll(ctx context.Context) (map[string][]byte, error) {
@@ -322,13 +330,13 @@ func (k *KV) LoadAll(ctx context.Context) (map[string][]byte, error) {
 		return nil, err
 	}
 
-	keys, err := k.kv.Keys()
+	keys, err := k.kv.Keys(ctx)
 	if err != nil {
 		// Empty bucket is not an error; return empty result.
-		if errors.Is(err, nc.ErrNoKeysFound) {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return map[string][]byte{}, nil
 		}
-		return nil, fmt.Errorf("kv loadAll: list keys: %w", err)
+		return nil, fmt.Errorf("kv loadAll: list keys: %w", transportError(err))
 	}
 
 	out := make(map[string][]byte, len(keys))
@@ -340,15 +348,15 @@ func (k *KV) LoadAll(ctx context.Context) (map[string][]byte, error) {
 			continue
 		}
 
-		entry, err := k.kv.Get(key)
+		entry, err := k.kv.Get(ctx, key)
 		if err != nil {
-			if errors.Is(err, nc.ErrKeyNotFound) {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
-			return nil, fmt.Errorf("kv loadAll %q: %w", key, err)
+			return nil, fmt.Errorf("kv loadAll %q: %w", key, transportError(err))
 		}
 
-		if entry.Operation() == nc.KeyValueDelete || entry.Operation() == nc.KeyValuePurge {
+		if entry.Operation() == jetstream.KeyValueDelete || entry.Operation() == jetstream.KeyValuePurge {
 			continue
 		}
 
