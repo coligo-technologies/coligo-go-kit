@@ -106,6 +106,15 @@ func TestClientOperationsAreSafeDuringClose(t *testing.T) {
 }
 
 func TestCloseWaitsForConcurrentHandlerReply(t *testing.T) {
+	for _, unsubscribe := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unsubscribed=%v", unsubscribe), func(t *testing.T) {
+			testCloseWaitsForConcurrentHandlerReply(t, unsubscribe)
+		})
+	}
+}
+
+func testCloseWaitsForConcurrentHandlerReply(t *testing.T, unsubscribe bool) {
+	t.Helper()
 	s, url := testutil.StartServer(t)
 	defer s.Shutdown()
 	client, err := kitnats.NewClient(context.Background(), url)
@@ -126,7 +135,7 @@ func TestCloseWaitsForConcurrentHandlerReply(t *testing.T) {
 			close(finish)
 		}
 	}()
-	_, err = client.SubscribeConcurrent("shutdown", func([]byte) (*kitnats.Response, error) {
+	sub, err := client.SubscribeConcurrent("shutdown", func([]byte) (*kitnats.Response, error) {
 		close(started)
 		<-finish
 		return kitnats.NewResponse(200, "complete", nil), nil
@@ -149,6 +158,11 @@ func TestCloseWaitsForConcurrentHandlerReply(t *testing.T) {
 	case <-started:
 	case <-time.After(time.Second):
 		t.Fatal("handler did not start")
+	}
+	if unsubscribe {
+		if err := sub.Unsubscribe(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	closed := make(chan struct{})
 	go func() { client.Close(); close(closed) }()
