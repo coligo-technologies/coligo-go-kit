@@ -16,8 +16,9 @@ import (
 type Client struct {
 	conn *nc.Conn
 
-	mu   sync.Mutex
-	subs []*nc.Subscription
+	mu       sync.Mutex
+	subs     []*nc.Subscription
+	handlers sync.WaitGroup
 }
 
 var errClientClosed = errors.New("nats client is nil or closed")
@@ -126,44 +127,60 @@ func (c *Client) connection() (*nc.Conn, error) {
 	return c.conn, nil
 }
 
+// Close drains subscriptions and waits for concurrent handlers and connection
+// closure. After three seconds it force-closes the connection; handler work is
+// not cancelled. Call Close from outside subscription handlers.
 func (c *Client) Close() {
 	if c == nil {
 		return
 	}
-
 	c.mu.Lock()
 	subs := c.subs
 	c.subs = nil
 	conn := c.conn
 	c.conn = nil
 	c.mu.Unlock()
-
-	// Best-effort drain subscriptions (lets in-flight callbacks finish).
-	for _, s := range subs {
-		if s != nil {
-			_ = s.Drain()
-		}
-	}
-
 	if conn == nil {
 		return
 	}
 
-	// Best-effort flush pending requests.
-	_ = conn.FlushTimeout(2 * time.Second)
-
-	// Drain the connection gracefully, but don't risk hanging forever.
-	done := make(chan struct{})
-	go func() {
-		_ = conn.Drain() // Drain will close the connection when done.
-		close(done)
-	}()
-
+	timeout := time.NewTimer(3 * time.Second)
+	defer timeout.Stop()
+	drained := make([]<-chan nc.SubStatus, 0, len(subs))
+	for _, s := range subs {
+		drained = append(drained, s.StatusChanged(nc.SubscriptionClosed))
+		_ = s.Drain()
+	}
+	// Once callbacks have drained, no more concurrent handlers can be added.
+	for _, done := range drained {
+		select {
+		case <-done:
+		case <-timeout.C:
+			conn.Close()
+			return
+		}
+	}
+	handlersDone := make(chan struct{})
+	go func() { c.handlers.Wait(); close(handlersDone) }()
 	select {
-	case <-done:
-		// drained successfully
-	case <-time.After(3 * time.Second):
-		// fallback: force close
+	case <-handlersDone:
+	case <-timeout.C:
+		conn.Close()
+		return
+	}
+
+	closed := conn.StatusChanged(nc.CLOSED)
+	defer conn.RemoveStatusListener(closed)
+	if conn.IsClosed() {
+		return
+	}
+	if err := conn.Drain(); err != nil {
+		conn.Close()
+		return
+	}
+	select {
+	case <-closed:
+	case <-timeout.C:
 		conn.Close()
 	}
 }

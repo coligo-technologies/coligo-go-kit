@@ -43,6 +43,8 @@ if err != nil {
 defer nc.Close()
 ```
 
+`Client.Close()` drains subscriptions, waits for concurrent request handlers, and waits for the connection to close. After three seconds it force-closes the connection. Call it outside subscription handlers; handler work is not cancelled.
+
 ### Request/Subscribe (core NATS)
 
 The `nats` package provides a request–reply abstraction with a typed response envelope.
@@ -89,7 +91,7 @@ Use `SubscribeConcurrent` instead of `Subscribe` when requests must run independ
 
 #### Request
 
-Requests automatically JSON-encode the payload and decode the response envelope.
+Requests automatically JSON-encode the payload and decode the response envelope. `Request` keeps its two-second timeout; use `RequestContext(ctx, subject, payload)` for a caller-controlled deadline or cancellation. Cancelling a request does not cancel responder work.
 
 ```go
 resp, err := nc.Request("events.user.created", map[string]any{"id": "123"})

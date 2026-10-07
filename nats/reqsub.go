@@ -1,6 +1,7 @@
 package nats
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,18 @@ import (
 )
 
 func (c *Client) Request(subject string, jsonBody any) (*Response, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	response, err := c.RequestContext(ctx, subject, jsonBody)
+	if errors.Is(err, context.DeadlineExceeded) {
+		err = errors.Join(err, nats.ErrTimeout)
+	}
+	return response, err
+}
+
+// RequestContext uses the caller's deadline and cancellation. Cancelling the
+// request stops waiting for a reply; it does not cancel work in the responder.
+func (c *Client) RequestContext(ctx context.Context, subject string, jsonBody any) (*Response, error) {
 	conn, err := c.connection()
 	if err != nil {
 		return BadRequest(err.Error()), err
@@ -29,9 +42,9 @@ func (c *Client) Request(subject string, jsonBody any) (*Response, error) {
 			fmt.Errorf("marshal request for %q: %w", subject, err)
 	}
 
-	msg, err := conn.Request(subject, b, 2*time.Second)
+	msg, err := conn.RequestWithContext(ctx, subject, b)
 	if err != nil {
-		if errors.Is(err, nats.ErrTimeout) {
+		if errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return GatewayTimeout(
 					fmt.Sprintf("request on %q timed out", subject),
 				),
@@ -110,7 +123,11 @@ func (c *Client) subscribeRequest(subject string, handler func([]byte) (*Respons
 
 	return c.subscribe(subject, func(m *nats.Msg) {
 		if concurrent {
-			go handle(m)
+			c.handlers.Add(1)
+			go func() {
+				defer c.handlers.Done()
+				handle(m)
+			}()
 		} else {
 			handle(m)
 		}

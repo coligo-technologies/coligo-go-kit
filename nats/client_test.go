@@ -100,3 +100,124 @@ func TestClientOperationsAreSafeDuringClose(t *testing.T) {
 		t.Fatal("Flush should fail after Close")
 	}
 }
+
+func TestCloseWaitsForConcurrentHandlerReply(t *testing.T) {
+	s, url := testutil.StartServer(t)
+	defer s.Shutdown()
+	client, err := kitnats.NewClient(context.Background(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	requester, err := kitnats.NewClient(context.Background(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer requester.Close()
+	started, finish := make(chan struct{}), make(chan struct{})
+	defer func() {
+		select {
+		case <-finish:
+		default:
+			close(finish)
+		}
+	}()
+	_, err = client.SubscribeConcurrent("shutdown", func([]byte) (*kitnats.Response, error) {
+		close(started)
+		<-finish
+		return kitnats.NewResponse(200, "complete", nil), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	reply := make(chan error, 1)
+	go func() {
+		response, err := requester.Request("shutdown", nil)
+		if err == nil && response.StatusCode != 200 {
+			err = fmt.Errorf("unexpected response: %+v", response)
+		}
+		reply <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not start")
+	}
+	closed := make(chan struct{})
+	go func() { client.Close(); close(closed) }()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while handler was running")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(finish)
+	select {
+	case err := <-reply:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reply lost during shutdown")
+	}
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish")
+	}
+}
+
+func TestCloseForcesShutdownForStuckHandler(t *testing.T) {
+	s, url := testutil.StartServer(t)
+	defer s.Shutdown()
+	client, err := kitnats.NewClient(context.Background(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	requester, err := kitnats.NewClient(context.Background(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer requester.Close()
+	started, finish, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	defer close(finish)
+	_, err = client.SubscribeConcurrent("stuck", func([]byte) (*kitnats.Response, error) {
+		defer close(finished)
+		close(started)
+		<-finish
+		return kitnats.NewResponse(200, "complete", nil), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() { _, _ = requester.RequestContext(ctx, "stuck", nil) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not start")
+	}
+	closed := make(chan struct{})
+	begin := time.Now()
+	go func() { client.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not enforce its timeout")
+	}
+	if elapsed := time.Since(begin); elapsed < 2500*time.Millisecond {
+		t.Fatalf("Close returned too early: %v", elapsed)
+	}
+	select {
+	case <-finished:
+		t.Fatal("Close cancelled handler work")
+	default:
+	}
+}
