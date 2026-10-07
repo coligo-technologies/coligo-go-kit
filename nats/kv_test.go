@@ -9,6 +9,7 @@ import (
 
 	"github.com/coligo-technologies/coligo-go-kit/internal/testutil"
 	kitnats "github.com/coligo-technologies/coligo-go-kit/nats"
+	"github.com/nats-io/nats.go"
 )
 
 func TestKV_SaveLoadUpdateDelete(t *testing.T) {
@@ -209,5 +210,131 @@ func TestKV_UpdateWithoutPriorLoadStillWorks(t *testing.T) {
 	}
 	if !bytes.Equal(got, []byte("v2")) {
 		t.Fatalf("Load mismatch: got %q want %q", got, "v2")
+	}
+}
+
+func TestKVClearPreservesBucketAndAllowsReuse(t *testing.T) {
+	s, url := testutil.StartServer(t)
+	defer s.Shutdown()
+	ctx := context.Background()
+	c, err := kitnats.NewClient(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	js, err := c.CreateJetStream(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kv, err := js.KV(ctx, "clear_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := kv.Save(ctx, "provider", []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := kv.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := kv.Clear(cancelled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, want context.Canceled", err)
+	}
+	if _, err := kv.Load(ctx, "provider"); err != nil {
+		t.Fatalf("cancelled clear removed data: %v", err)
+	}
+	if err := kv.Clear(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := js.Context().StreamInfo("KV_clear_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stream.State.Msgs != 0 {
+		t.Fatalf("clear left %d messages", stream.State.Msgs)
+	}
+	after, err := kv.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatalf("bucket config changed: before=%+v after=%+v", before, after)
+	}
+	if err := kv.Update(ctx, "provider", []byte("new")); err != nil {
+		t.Fatalf("reuse after clear: %v", err)
+	}
+	value, err := kv.Load(ctx, "provider")
+	if err != nil || string(value) != "new" {
+		t.Fatalf("got %q, %v", value, err)
+	}
+}
+
+func TestKVOperationsHonorInFlightDeadlines(t *testing.T) {
+	s, url := testutil.StartServer(t)
+	defer s.Shutdown()
+	client, err := kitnats.NewClient(context.Background(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	js, err := client.CreateJetStream(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	kv, err := js.KV(context.Background(), "deadline_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = kv.Save(context.Background(), "key", []byte("value")); err != nil {
+		t.Fatal(err)
+	}
+	// Keep Core NATS connected but stall the JetStream request subjects. Each
+	// operation must obey its own deadline rather than the client's default wait.
+	if err = s.DisableJetStream(); err != nil {
+		t.Fatal(err)
+	}
+	stalled, err := nats.Connect(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stalled.Close()
+	for _, subject := range []string{"$JS.API.>", "$KV.>"} {
+		if _, err = stalled.Subscribe(subject, func(*nats.Msg) {}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = stalled.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	operations := map[string]func(context.Context) error{
+		"open":           func(ctx context.Context) error { _, err := js.KV(ctx, "other"); return err },
+		"save":           func(ctx context.Context) error { return kv.Save(ctx, "key", nil) },
+		"update":         func(ctx context.Context) error { return kv.Update(ctx, "key", nil) },
+		"delete":         func(ctx context.Context) error { return kv.Delete(ctx, "key") },
+		"clear":          func(ctx context.Context) error { return kv.Clear(ctx) },
+		"load":           func(ctx context.Context) error { _, err := kv.Load(ctx, "key"); return err },
+		"loadEntry":      func(ctx context.Context) error { _, err := kv.LoadEntry(ctx, "key"); return err },
+		"create":         func(ctx context.Context) error { _, err := kv.Create(ctx, "new", nil); return err },
+		"updateRevision": func(ctx context.Context) error { _, err := kv.UpdateRevision(ctx, "key", nil, 1); return err },
+		"status":         func(ctx context.Context) error { _, err := kv.Status(ctx); return err },
+		"loadAll":        func(ctx context.Context) error { _, err := kv.LoadAll(ctx); return err },
+	}
+	for name, operation := range operations {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- operation(ctx) }()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("got %v, want context.DeadlineExceeded", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("operation ignored its deadline")
+			}
+		})
 	}
 }
