@@ -45,6 +45,8 @@ defer nc.Close()
 
 `Client.Close()` drains subscriptions, waits for concurrent request handlers, and waits for the connection to close. After three seconds it force-closes the connection. Call it outside subscription handlers; handler work is not cancelled.
 
+`NewClient` waits for a connected broker or the caller's deadline (15 seconds by default). Established connections reconnect automatically after outages. `FlushContext(ctx)` provides a cancellable flush barrier.
+
 ### Request/Subscribe (core NATS)
 
 The `nats` package provides a request–reply abstraction with a typed response envelope.
@@ -88,6 +90,8 @@ if err != nil {
 ```
 
 Use `SubscribeConcurrent` instead of `Subscribe` when requests must run independently, such as rejecting overlapping reset requests. Concurrent handlers must synchronize shared state.
+
+`RequestInto(ctx, subject, request, result)` checks the service status and decodes response data directly into the result pointer, preserving integer precision. Pass nil to ignore response data. Service failures return `StatusError`; transport failures can be checked with `ErrTimeout`, `ErrNoResponders`, and the standard context errors.
 
 #### Request
 
@@ -201,7 +205,9 @@ _ = kv.Delete(ctx, "feature_flags")
 For optimistic concurrency, use `LoadEntry`, `Create`, and `UpdateRevision`.
 `kv.Clear(ctx)` removes all values and history without deleting the bucket. Stop bucket writes before clearing it.
 
-Revision conflicts are reported as `nats.ErrKVRevisionConflict`.
+Revision conflicts are reported as `nats.ErrKVRevisionConflict`. KV operations honor their caller's context for broker requests.
+
+`EnsureStream` creates a file-backed stream without changing existing retention settings. `PurgeStream` keeps its definition while clearing messages. `ReadHistory` visits messages from a time or sequence, using a caller deadline, idle timeout and accepted-message limit. The callback returns false to skip a message without consuming that limit.
 
 ## Releasing
 
